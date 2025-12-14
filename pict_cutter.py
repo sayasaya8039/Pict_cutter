@@ -29,32 +29,80 @@ from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QFont
 class ImageProcessor:
     """画像処理クラス"""
 
+    # 検出感度の設定値
+    DETECTION_SETTINGS = {
+        "ゆるい": {
+            "canny_low": 30,      # 低い閾値 = より多くのエッジを検出
+            "canny_high": 100,
+            "dilate_iter": 3,     # 多めに膨張 = 広めに検出
+            "erode_iter": 1,
+            "margin": 15,         # 大きめのマージン
+            "min_contour_area": 50,  # 小さいノイズも含める
+        },
+        "普通": {
+            "canny_low": 50,
+            "canny_high": 150,
+            "dilate_iter": 2,
+            "erode_iter": 1,
+            "margin": 8,
+            "min_contour_area": 100,
+        },
+        "きつい": {
+            "canny_low": 80,      # 高い閾値 = 明確なエッジのみ
+            "canny_high": 200,
+            "dilate_iter": 1,     # 少なめに膨張 = タイトに検出
+            "erode_iter": 2,      # 多めに収縮 = ノイズ除去
+            "margin": 2,          # 小さめのマージン
+            "min_contour_area": 200,  # 大きい輪郭のみ
+        },
+    }
+
     def __init__(self):
         self.upscaler = None
         self.upscaler_available = False
 
-    def detect_content_bounds(self, image: np.ndarray, threshold: int = 10) -> Tuple[int, int, int, int]:
-        """AIによる余白検知 - コンテンツの境界を検出"""
+    def detect_content_bounds(self, image: np.ndarray, mode: str = "普通") -> Tuple[int, int, int, int]:
+        """
+        AIによる余白検知 - コンテンツの境界を検出
+
+        Args:
+            image: 入力画像
+            mode: 検出モード ("ゆるい", "普通", "きつい")
+        """
+        settings = self.DETECTION_SETTINGS.get(mode, self.DETECTION_SETTINGS["普通"])
+
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
             gray = image.copy()
 
-        edges = cv2.Canny(gray, 50, 150)
-        kernel = np.ones((3, 3), np.uint8)
-        edges = cv2.dilate(edges, kernel, iterations=2)
-        edges = cv2.erode(edges, kernel, iterations=1)
+        # エッジ検出（感度に応じたパラメータ）
+        edges = cv2.Canny(gray, settings["canny_low"], settings["canny_high"])
 
+        # モルフォロジー処理
+        kernel = np.ones((3, 3), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=settings["dilate_iter"])
+        edges = cv2.erode(edges, kernel, iterations=settings["erode_iter"])
+
+        # 輪郭検出
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if not contours:
             h, w = image.shape[:2]
             return 0, 0, w, h
 
-        all_points = np.vstack(contours)
+        # 最小面積でフィルタリング
+        min_area = settings["min_contour_area"]
+        filtered_contours = [c for c in contours if cv2.contourArea(c) >= min_area]
+
+        if not filtered_contours:
+            filtered_contours = contours  # フィルタ後に空なら元の輪郭を使用
+
+        all_points = np.vstack(filtered_contours)
         x, y, w, h = cv2.boundingRect(all_points)
 
-        margin = 5
+        # マージンを追加
+        margin = settings["margin"]
         x = max(0, x - margin)
         y = max(0, y - margin)
         w = min(image.shape[1] - x, w + 2 * margin)
@@ -62,9 +110,15 @@ class ImageProcessor:
 
         return x, y, w, h
 
-    def get_square_crop_region(self, image: np.ndarray) -> Tuple[int, int, int, int]:
-        """1:1の正方形クロップ領域を取得（余白検知ベース）"""
-        x, y, w, h = self.detect_content_bounds(image)
+    def get_square_crop_region(self, image: np.ndarray, mode: str = "普通") -> Tuple[int, int, int, int]:
+        """
+        1:1の正方形クロップ領域を取得（余白検知ベース）
+
+        Args:
+            image: 入力画像
+            mode: 検出モード ("ゆるい", "普通", "きつい")
+        """
+        x, y, w, h = self.detect_content_bounds(image, mode)
         size = max(w, h)
 
         center_x = x + w // 2
@@ -347,6 +401,27 @@ class MainWindow(QMainWindow):
         # 右側: 設定＆プレビュー
         right_panel = QVBoxLayout()
 
+        # 自動検出設定
+        detect_group = QGroupBox("自動検出設定")
+        detect_layout = QVBoxLayout(detect_group)
+
+        sensitivity_layout = QHBoxLayout()
+        sensitivity_layout.addWidget(QLabel("検出感度:"))
+        self.combo_sensitivity = QComboBox()
+        self.combo_sensitivity.addItems(["ゆるい", "普通", "きつい"])
+        self.combo_sensitivity.setCurrentIndex(1)  # デフォルト: 普通
+        sensitivity_layout.addWidget(self.combo_sensitivity)
+        sensitivity_layout.addStretch()
+        detect_layout.addLayout(sensitivity_layout)
+
+        # 感度の説明
+        self.lbl_sensitivity_desc = QLabel("余白を適度に残して検出")
+        self.lbl_sensitivity_desc.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        detect_layout.addWidget(self.lbl_sensitivity_desc)
+        self.combo_sensitivity.currentTextChanged.connect(self._on_sensitivity_changed)
+
+        right_panel.addWidget(detect_group)
+
         # 選択範囲情報
         selection_group = QGroupBox("選択範囲")
         selection_layout = QVBoxLayout(selection_group)
@@ -458,9 +533,19 @@ class MainWindow(QMainWindow):
     def _auto_detect(self):
         if self.current_image is None:
             return
-        x, y, w, h = self.processor.get_square_crop_region(self.current_image)
+        mode = self.combo_sensitivity.currentText()
+        x, y, w, h = self.processor.get_square_crop_region(self.current_image, mode)
         self.image_label.set_selection(x, y, w, h)
-        self.statusbar.showMessage(f"自動検出: 選択範囲 ({x}, {y}) {w}x{h}")
+        self.statusbar.showMessage(f"自動検出 [{mode}]: 選択範囲 ({x}, {y}) {w}x{h}")
+
+    def _on_sensitivity_changed(self, mode: str):
+        """検出感度変更時の処理"""
+        descriptions = {
+            "ゆるい": "余白を多めに残して広く検出",
+            "普通": "余白を適度に残して検出",
+            "きつい": "余白を最小限にしてタイトに検出",
+        }
+        self.lbl_sensitivity_desc.setText(descriptions.get(mode, ""))
 
     def _reset_selection(self):
         self.image_label.clear_selection()
