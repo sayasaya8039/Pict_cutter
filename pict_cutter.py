@@ -5,6 +5,9 @@ All-in-one version for PyInstaller
 
 import sys
 import os
+import json
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -16,10 +19,302 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QSlider, QSpinBox,
     QGroupBox, QComboBox, QCheckBox, QMessageBox,
-    QStatusBar, QApplication
+    QStatusBar, QApplication, QDialog, QLineEdit,
+    QTextEdit, QDialogButtonBox, QProgressDialog
 )
-from PySide6.QtCore import Qt, QRect, Signal, QPoint, QSize
+from PySide6.QtCore import Qt, QRect, Signal, QPoint, QSize, QThread, QSettings
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QFont
+
+
+# ============================================================
+# 設定管理
+# ============================================================
+
+class SettingsManager:
+    """設定管理クラス"""
+
+    def __init__(self):
+        self.settings = QSettings("PictCutter", "PictCutter")
+
+    def get_api_key(self) -> str:
+        return self.settings.value("api_key", "")
+
+    def set_api_key(self, key: str):
+        self.settings.setValue("api_key", key)
+
+    def get_model(self) -> str:
+        return self.settings.value("model", "nano-banana")
+
+    def set_model(self, model: str):
+        self.settings.setValue("model", model)
+
+
+# ============================================================
+# 設定ダイアログ
+# ============================================================
+
+class SettingsDialog(QDialog):
+    """設定ダイアログ"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("設定")
+        self.setMinimumWidth(400)
+        self.settings_manager = SettingsManager()
+
+        self._setup_ui()
+        self._load_settings()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # APIキー設定
+        api_group = QGroupBox("API設定")
+        api_layout = QVBoxLayout(api_group)
+
+        api_layout.addWidget(QLabel("Banana API キー:"))
+        self.txt_api_key = QLineEdit()
+        self.txt_api_key.setEchoMode(QLineEdit.Password)
+        self.txt_api_key.setPlaceholderText("APIキーを入力...")
+        api_layout.addWidget(self.txt_api_key)
+
+        # 表示/非表示ボタン
+        self.btn_show_key = QPushButton("表示")
+        self.btn_show_key.setCheckable(True)
+        self.btn_show_key.clicked.connect(self._toggle_key_visibility)
+        api_layout.addWidget(self.btn_show_key)
+
+        layout.addWidget(api_group)
+
+        # ボタン
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self._save_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _toggle_key_visibility(self):
+        if self.btn_show_key.isChecked():
+            self.txt_api_key.setEchoMode(QLineEdit.Normal)
+            self.btn_show_key.setText("隠す")
+        else:
+            self.txt_api_key.setEchoMode(QLineEdit.Password)
+            self.btn_show_key.setText("表示")
+
+    def _load_settings(self):
+        self.txt_api_key.setText(self.settings_manager.get_api_key())
+
+    def _save_and_accept(self):
+        self.settings_manager.set_api_key(self.txt_api_key.text().strip())
+        self.accept()
+
+
+# ============================================================
+# 画像生成ダイアログ
+# ============================================================
+
+class ImageGenerateDialog(QDialog):
+    """画像生成ダイアログ"""
+
+    image_generated = Signal(np.ndarray)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("AI画像生成")
+        self.setMinimumSize(500, 400)
+        self.settings_manager = SettingsManager()
+        self.generated_image = None
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # モデル選択
+        model_group = QGroupBox("モデル選択")
+        model_layout = QHBoxLayout(model_group)
+        model_layout.addWidget(QLabel("モデル:"))
+        self.combo_model = QComboBox()
+        self.combo_model.addItems(["nano-banana (標準)", "nano-banana-pro (有料)"])
+        model_layout.addWidget(self.combo_model)
+        model_layout.addStretch()
+        layout.addWidget(model_group)
+
+        # サイズ選択
+        size_group = QGroupBox("出力サイズ")
+        size_layout = QHBoxLayout(size_group)
+        size_layout.addWidget(QLabel("サイズ:"))
+        self.combo_size = QComboBox()
+        self.combo_size.addItems(["32x32", "64x64", "128x128", "256x256", "512x512", "1024x1024"])
+        self.combo_size.setCurrentIndex(2)  # デフォルト: 128x128
+        size_layout.addWidget(self.combo_size)
+        size_layout.addStretch()
+        layout.addWidget(size_group)
+
+        # プロンプト入力
+        prompt_group = QGroupBox("プロンプト")
+        prompt_layout = QVBoxLayout(prompt_group)
+        self.txt_prompt = QTextEdit()
+        self.txt_prompt.setPlaceholderText("生成したいアイコンの説明を入力...\n例: cute cat icon, simple flat design, white background")
+        self.txt_prompt.setMaximumHeight(120)
+        prompt_layout.addWidget(self.txt_prompt)
+        layout.addWidget(prompt_group)
+
+        # プレビュー
+        preview_group = QGroupBox("プレビュー")
+        preview_layout = QVBoxLayout(preview_group)
+        self.lbl_preview = QLabel()
+        self.lbl_preview.setFixedSize(200, 200)
+        self.lbl_preview.setAlignment(Qt.AlignCenter)
+        self.lbl_preview.setStyleSheet(
+            "background-color: #1E293B; border: 2px solid #334155; border-radius: 8px;"
+        )
+        self.lbl_preview.setText("生成された画像がここに表示されます")
+        preview_layout.addWidget(self.lbl_preview, alignment=Qt.AlignCenter)
+        layout.addWidget(preview_group)
+
+        # ボタン
+        btn_layout = QHBoxLayout()
+
+        self.btn_generate = QPushButton("生成")
+        self.btn_generate.clicked.connect(self._generate_image)
+        btn_layout.addWidget(self.btn_generate)
+
+        self.btn_use = QPushButton("この画像を使用")
+        self.btn_use.clicked.connect(self._use_image)
+        self.btn_use.setEnabled(False)
+        btn_layout.addWidget(self.btn_use)
+
+        btn_cancel = QPushButton("キャンセル")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        layout.addLayout(btn_layout)
+
+    def _get_model_name(self) -> str:
+        """選択されたモデル名を取得"""
+        text = self.combo_model.currentText()
+        if "pro" in text.lower():
+            return "nano-banana-pro"
+        return "nano-banana"
+
+    def _get_size(self) -> int:
+        """選択されたサイズを取得"""
+        size_text = self.combo_size.currentText()
+        return int(size_text.split("x")[0])
+
+    def _generate_image(self):
+        """画像を生成"""
+        api_key = self.settings_manager.get_api_key()
+        if not api_key:
+            QMessageBox.warning(self, "エラー", "APIキーが設定されていません。\n設定画面でAPIキーを入力してください。")
+            return
+
+        prompt = self.txt_prompt.toPlainText().strip()
+        if not prompt:
+            QMessageBox.warning(self, "エラー", "プロンプトを入力してください。")
+            return
+
+        model = self._get_model_name()
+        size = self._get_size()
+
+        self.btn_generate.setEnabled(False)
+        self.btn_generate.setText("生成中...")
+        QApplication.processEvents()
+
+        try:
+            # Banana API呼び出し
+            image = self._call_banana_api(api_key, model, prompt, size)
+
+            if image is not None:
+                self.generated_image = image
+                self._show_preview(image)
+                self.btn_use.setEnabled(True)
+            else:
+                QMessageBox.warning(self, "エラー", "画像の生成に失敗しました。")
+
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"生成エラー: {str(e)}")
+
+        finally:
+            self.btn_generate.setEnabled(True)
+            self.btn_generate.setText("生成")
+
+    def _call_banana_api(self, api_key: str, model: str, prompt: str, size: int) -> Optional[np.ndarray]:
+        """Banana APIを呼び出して画像を生成"""
+        try:
+            # Banana API エンドポイント
+            url = "https://api.banana.dev/v1/generate"
+
+            # リクエストデータ
+            data = {
+                "model": model,
+                "prompt": prompt + ", icon style, 1:1 aspect ratio, centered",
+                "width": size,
+                "height": size,
+                "num_outputs": 1
+            }
+
+            # リクエスト作成
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}"
+                },
+                method="POST"
+            )
+
+            # API呼び出し
+            with urllib.request.urlopen(req, timeout=60) as response:
+                result = json.loads(response.read().decode('utf-8'))
+
+                # レスポンスから画像URLを取得
+                if "images" in result and len(result["images"]) > 0:
+                    image_url = result["images"][0]
+
+                    # 画像をダウンロード
+                    with urllib.request.urlopen(image_url) as img_response:
+                        img_data = img_response.read()
+                        img_array = np.frombuffer(img_data, dtype=np.uint8)
+                        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                        return image
+
+                elif "output" in result:
+                    # 別のレスポンス形式
+                    import base64
+                    img_data = base64.b64decode(result["output"])
+                    img_array = np.frombuffer(img_data, dtype=np.uint8)
+                    image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    return image
+
+        except urllib.error.HTTPError as e:
+            error_msg = e.read().decode('utf-8') if e.fp else str(e)
+            raise Exception(f"API Error ({e.code}): {error_msg}")
+        except urllib.error.URLError as e:
+            raise Exception(f"接続エラー: {str(e.reason)}")
+        except Exception as e:
+            raise Exception(f"エラー: {str(e)}")
+
+        return None
+
+    def _show_preview(self, image: np.ndarray):
+        """プレビュー表示"""
+        h, w = image.shape[:2]
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        q_image = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_image).scaled(
+            200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.lbl_preview.setPixmap(pixmap)
+
+    def _use_image(self):
+        """生成した画像を使用"""
+        if self.generated_image is not None:
+            self.image_generated.emit(self.generated_image)
+            self.accept()
 
 
 # ============================================================
@@ -411,6 +706,20 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_reset)
 
         left_panel.addLayout(btn_layout)
+
+        # 2行目のボタン
+        btn_layout2 = QHBoxLayout()
+
+        self.btn_generate = QPushButton("AI画像生成")
+        self.btn_generate.clicked.connect(self._open_generate_dialog)
+        btn_layout2.addWidget(self.btn_generate)
+
+        self.btn_settings = QPushButton("設定")
+        self.btn_settings.clicked.connect(self._open_settings)
+        btn_layout2.addWidget(self.btn_settings)
+
+        left_panel.addLayout(btn_layout2)
+
         main_layout.addLayout(left_panel, 2)
 
         # 右側: 設定＆プレビュー
@@ -545,6 +854,31 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.load_image(path)
+
+    def _open_generate_dialog(self):
+        """AI画像生成ダイアログを開く"""
+        dialog = ImageGenerateDialog(self)
+        dialog.image_generated.connect(self._on_image_generated)
+        dialog.exec()
+
+    def _on_image_generated(self, image: np.ndarray):
+        """生成された画像を受け取る"""
+        self.current_image = image
+        self.current_image_name = "generated_icon"
+        self._display_image(image)
+        self.btn_auto_detect.setEnabled(True)
+        self.btn_reset.setEnabled(True)
+
+        # 画像全体を選択範囲として設定
+        h, w = image.shape[:2]
+        self.image_label.set_selection(0, 0, w, h)
+
+        self.statusbar.showMessage(f"AI画像生成完了: {w}x{h}")
+
+    def _open_settings(self):
+        """設定ダイアログを開く"""
+        dialog = SettingsDialog(self)
+        dialog.exec()
 
     def _auto_detect(self):
         if self.current_image is None:
