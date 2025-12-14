@@ -373,6 +373,7 @@ class MainWindow(QMainWindow):
         self.current_image: Optional[np.ndarray] = None
         self.cropped_image: Optional[np.ndarray] = None
         self.upscaled_image: Optional[np.ndarray] = None
+        self.current_image_name: str = "output"  # 元画像のファイル名（拡張子なし）
 
         self._setup_ui()
         self._setup_statusbar()
@@ -522,6 +523,7 @@ class MainWindow(QMainWindow):
         image = self.processor.load_image(path)
         if image is not None:
             self.current_image = image
+            self.current_image_name = Path(path).stem  # 拡張子なしのファイル名を保存
             self._display_image(image)
             self.btn_auto_detect.setEnabled(True)
             self.btn_reset.setEnabled(True)
@@ -611,8 +613,11 @@ class MainWindow(QMainWindow):
         format_str = self.combo_format.currentText()
         ext = ".png" if format_str == "PNG" else ".jpg"
 
+        # 元画像のファイル名をベースにしたデフォルト名
+        default_name = f"{self.current_image_name}_cropped{ext}"
+
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存先を選択", f"output{ext}", f"{format_str}ファイル (*{ext})"
+            self, "保存先を選択", default_name, f"{format_str}ファイル (*{ext})"
         )
 
         if path:
