@@ -6,9 +6,6 @@ Pict Cutter - 画像トリミング＆超解像アプリ
 import sys
 import os
 
-# srcディレクトリをパスに追加
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
