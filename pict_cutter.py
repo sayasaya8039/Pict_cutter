@@ -79,6 +79,20 @@ class ImageProcessor:
         # エッジ検出（感度に応じたパラメータ）
         edges = cv2.Canny(gray, settings["canny_low"], settings["canny_high"])
 
+        # 四隅のウォーターマーク/ロゴを除外（画像サイズの12%をマスク）
+        img_h, img_w = edges.shape[:2]
+        corner_w = int(img_w * 0.12)
+        corner_h = int(img_h * 0.12)
+
+        # 左上
+        edges[0:corner_h, 0:corner_w] = 0
+        # 右上
+        edges[0:corner_h, img_w-corner_w:img_w] = 0
+        # 左下
+        edges[img_h-corner_h:img_h, 0:corner_w] = 0
+        # 右下
+        edges[img_h-corner_h:img_h, img_w-corner_w:img_w] = 0
+
         # モルフォロジー処理
         kernel = np.ones((3, 3), np.uint8)
         edges = cv2.dilate(edges, kernel, iterations=settings["dilate_iter"])
