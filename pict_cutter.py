@@ -686,6 +686,7 @@ class MainWindow(QMainWindow):
         self.cropped_image: Optional[np.ndarray] = None
         self.upscaled_image: Optional[np.ndarray] = None
         self.current_image_name: str = "output"  # 元画像のファイル名（拡張子なし）
+        self.last_save_dir: str = ""  # 最後に保存したフォルダ
 
         self._setup_ui()
         self._setup_statusbar()
@@ -963,8 +964,10 @@ class MainWindow(QMainWindow):
         format_str = self.combo_format.currentText()
         ext = ".png" if format_str == "PNG" else ".ico" if format_str == "ICO" else ".jpg"
 
-        # 元画像のファイル名をベースにしたデフォルト名
+        # 元画像のファイル名をベースにしたデフォルト名（前回の保存先フォルダを使用）
         default_name = f"{self.current_image_name}_cropped{ext}"
+        if self.last_save_dir:
+            default_name = str(Path(self.last_save_dir) / default_name)
 
         path, _ = QFileDialog.getSaveFileName(
             self, "保存先を選択", default_name, f"{format_str}ファイル (*{ext})"
@@ -975,6 +978,7 @@ class MainWindow(QMainWindow):
             success = self.processor.save_image(self.upscaled_image, path, format_str, quality)
 
             if success:
+                self.last_save_dir = str(Path(path).parent)
                 self.statusbar.showMessage(f"保存完了: {path}")
                 QMessageBox.information(self, "完了", f"画像を保存しました:\n{path}")
             else:
