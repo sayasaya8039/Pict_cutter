@@ -22,8 +22,10 @@ build/
 .DS_Store
 Thumbs.db
 
-# EXE output (keep README)
+# EXE output (distribute via GitHub Releases)
+*.exe
 Pict_cutter/*.exe
+Icon_gene_form/*.exe
 
 # Models (large files)
 models/
