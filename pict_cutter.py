@@ -1,5 +1,5 @@
 """
-Pict Cutter - 画像トリミング＆超解像アプリ
+Icon Gene Form - アイコン生成＆トリミングアプリ
 All-in-one version for PyInstaller
 """
 
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QDialogButtonBox, QProgressDialog
 )
 from PySide6.QtCore import Qt, QRect, Signal, QPoint, QSize, QThread, QSettings
-from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QFont
+from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QFont, QIcon
 
 
 # ============================================================
@@ -34,7 +34,7 @@ class SettingsManager:
     """設定管理クラス"""
 
     def __init__(self):
-        self.settings = QSettings("PictCutter", "PictCutter")
+        self.settings = QSettings("IconGeneForm", "IconGeneForm")
 
     def get_api_key(self) -> str:
         return self.settings.value("api_key", "")
@@ -72,7 +72,7 @@ class SettingsDialog(QDialog):
         api_group = QGroupBox("API設定")
         api_layout = QVBoxLayout(api_group)
 
-        api_layout.addWidget(QLabel("Banana API キー:"))
+        api_layout.addWidget(QLabel("Google AI Studio API キー:"))
         self.txt_api_key = QLineEdit()
         self.txt_api_key.setEchoMode(QLineEdit.Password)
         self.txt_api_key.setPlaceholderText("APIキーを入力...")
@@ -136,7 +136,7 @@ class ImageGenerateDialog(QDialog):
         model_layout = QHBoxLayout(model_group)
         model_layout.addWidget(QLabel("モデル:"))
         self.combo_model = QComboBox()
-        self.combo_model.addItems(["nano-banana (標準)", "nano-banana-pro (有料)"])
+        self.combo_model.addItems(["Gemini 2.5 Flash Image (標準)", "Gemini 3.0 Pro Image (高品質)"])
         model_layout.addWidget(self.combo_model)
         model_layout.addStretch()
         layout.addWidget(model_group)
@@ -195,9 +195,9 @@ class ImageGenerateDialog(QDialog):
     def _get_model_name(self) -> str:
         """選択されたモデル名を取得"""
         text = self.combo_model.currentText()
-        if "pro" in text.lower():
-            return "nano-banana-pro"
-        return "nano-banana"
+        if "3.0" in text:
+            return "gemini-3-pro-image-preview"
+        return "gemini-2.5-flash-image"
 
     def _get_size(self) -> int:
         """選択されたサイズを取得"""
@@ -224,8 +224,8 @@ class ImageGenerateDialog(QDialog):
         QApplication.processEvents()
 
         try:
-            # Banana API呼び出し
-            image = self._call_banana_api(api_key, model, prompt, size)
+            # Google AI Studio Imagen API呼び出し
+            image = self._call_imagen_api(api_key, model, prompt, size)
 
             if image is not None:
                 self.generated_image = image
@@ -241,54 +241,65 @@ class ImageGenerateDialog(QDialog):
             self.btn_generate.setEnabled(True)
             self.btn_generate.setText("生成")
 
-    def _call_banana_api(self, api_key: str, model: str, prompt: str, size: int) -> Optional[np.ndarray]:
-        """Banana APIを呼び出して画像を生成"""
-        try:
-            # Banana API エンドポイント
-            url = "https://api.banana.dev/v1/generate"
+    def _call_imagen_api(self, api_key: str, model: str, prompt: str, size: int) -> Optional[np.ndarray]:
+        """Google AI Studio Gemini APIを呼び出して画像を生成"""
+        import base64
 
-            # リクエストデータ
+        try:
+            # Gemini API エンドポイント（generateContent）
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+            # プロンプトにアイコンスタイルを追加
+            full_prompt = f"Generate a {size}x{size} pixel icon image: {prompt}. Style: icon, 1:1 aspect ratio, centered, clean design, suitable for app icon."
+
+            # リクエストデータ（Gemini形式）
             data = {
-                "model": model,
-                "prompt": prompt + ", icon style, 1:1 aspect ratio, centered",
-                "width": size,
-                "height": size,
-                "num_outputs": 1
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": full_prompt}
+                        ]
+                    }
+                ],
+                "generationConfig": {
+                    "responseModalities": ["image", "text"],
+                    "responseMimeType": "text/plain"
+                }
             }
 
-            # リクエスト作成
+            # リクエスト作成（APIキーはヘッダーで渡す）
             req = urllib.request.Request(
                 url,
                 data=json.dumps(data).encode('utf-8'),
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}"
+                    "x-goog-api-key": api_key
                 },
                 method="POST"
             )
 
             # API呼び出し
-            with urllib.request.urlopen(req, timeout=60) as response:
+            with urllib.request.urlopen(req, timeout=120) as response:
                 result = json.loads(response.read().decode('utf-8'))
 
-                # レスポンスから画像URLを取得
-                if "images" in result and len(result["images"]) > 0:
-                    image_url = result["images"][0]
+                # レスポンスから画像データを取得（Gemini形式）
+                if "candidates" in result and len(result["candidates"]) > 0:
+                    candidate = result["candidates"][0]
+                    if "content" in candidate and "parts" in candidate["content"]:
+                        for part in candidate["content"]["parts"]:
+                            if "inlineData" in part:
+                                img_data = base64.b64decode(part["inlineData"]["data"])
+                                img_array = np.frombuffer(img_data, dtype=np.uint8)
+                                image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
-                    # 画像をダウンロード
-                    with urllib.request.urlopen(image_url) as img_response:
-                        img_data = img_response.read()
-                        img_array = np.frombuffer(img_data, dtype=np.uint8)
-                        image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                        return image
+                                # 指定サイズにリサイズ
+                                if image is not None:
+                                    image = cv2.resize(image, (size, size), interpolation=cv2.INTER_LANCZOS4)
+                                return image
 
-                elif "output" in result:
-                    # 別のレスポンス形式
-                    import base64
-                    img_data = base64.b64decode(result["output"])
-                    img_array = np.frombuffer(img_data, dtype=np.uint8)
-                    image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    return image
+                # エラーメッセージがあれば表示
+                if "error" in result:
+                    raise Exception(f"API Error: {result['error'].get('message', str(result['error']))}")
 
         except urllib.error.HTTPError as e:
             error_msg = e.read().decode('utf-8') if e.fp else str(e)
@@ -464,6 +475,12 @@ class ImageProcessor:
         try:
             if format.upper() == 'PNG':
                 cv2.imwrite(path, image, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+            elif format.upper() == 'ICO':
+                # ICO形式はPillowで保存
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(rgb_image)
+                # ICOは複数サイズを含めることが可能、ここでは単一サイズで保存
+                pil_image.save(path, format='ICO')
             else:
                 cv2.imwrite(path, image, [cv2.IMWRITE_JPEG_QUALITY, quality])
             return True
@@ -625,7 +642,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Pict Cutter - 画像トリミング＆超解像")
+        self.setWindowTitle("Icon Gene Form - アイコン生成＆トリミング")
         self.setMinimumSize(1000, 700)
 
         self.setStyleSheet("""
@@ -759,11 +776,10 @@ class MainWindow(QMainWindow):
 
         size_layout = QHBoxLayout()
         size_layout.addWidget(QLabel("出力サイズ:"))
-        self.spin_output_size = QSpinBox()
-        self.spin_output_size.setRange(32, 512)
-        self.spin_output_size.setValue(128)
-        self.spin_output_size.setSuffix(" px")
-        size_layout.addWidget(self.spin_output_size)
+        self.combo_output_size = QComboBox()
+        self.combo_output_size.addItems(["32x32", "64x64", "128x128", "256x256", "512x512", "1024x1024"])
+        self.combo_output_size.setCurrentIndex(2)  # デフォルト: 128x128
+        size_layout.addWidget(self.combo_output_size)
         size_layout.addStretch()
         process_layout.addLayout(size_layout)
 
@@ -798,7 +814,7 @@ class MainWindow(QMainWindow):
         format_layout = QHBoxLayout()
         format_layout.addWidget(QLabel("形式:"))
         self.combo_format = QComboBox()
-        self.combo_format.addItems(["PNG", "JPEG"])
+        self.combo_format.addItems(["PNG", "JPEG", "ICO"])
         format_layout.addWidget(self.combo_format)
         format_layout.addStretch()
         save_layout.addLayout(format_layout)
@@ -921,7 +937,7 @@ class MainWindow(QMainWindow):
             return
 
         x, y, w, h = selection
-        target_size = self.spin_output_size.value()
+        target_size = int(self.combo_output_size.currentText().split("x")[0])
 
         self.statusbar.showMessage("処理中...")
         QApplication.processEvents()
@@ -945,7 +961,7 @@ class MainWindow(QMainWindow):
             return
 
         format_str = self.combo_format.currentText()
-        ext = ".png" if format_str == "PNG" else ".jpg"
+        ext = ".png" if format_str == "PNG" else ".ico" if format_str == "ICO" else ".jpg"
 
         # 元画像のファイル名をベースにしたデフォルト名
         default_name = f"{self.current_image_name}_cropped{ext}"
@@ -969,14 +985,68 @@ class MainWindow(QMainWindow):
 # エントリーポイント
 # ============================================================
 
+def create_app_icon() -> QIcon:
+    """アプリアイコンを生成"""
+    import math
+    size = 256
+    img = QImage(size, size, QImage.Format_ARGB32)
+    img.fill(Qt.transparent)
+
+    painter = QPainter(img)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # 背景
+    bg_color = QColor(15, 23, 42)
+    accent_color = QColor(56, 189, 248)
+    highlight_color = QColor(125, 211, 252)
+
+    # 角丸背景
+    painter.setPen(QPen(accent_color, 4))
+    painter.setBrush(bg_color)
+    painter.drawRoundedRect(20, 20, size-40, size-40, 40, 40)
+
+    # フレーム
+    painter.setPen(QPen(highlight_color, 3))
+    painter.setBrush(Qt.transparent)
+    painter.drawRoundedRect(50, 50, size-100, size-100, 20, 20)
+
+    # 山形
+    from PySide6.QtGui import QPolygon
+    from PySide6.QtCore import QPoint as QP
+    points = [QP(70, 186), QP(110, 120), QP(140, 150), QP(170, 100), QP(186, 186)]
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(accent_color)
+    painter.drawPolygon(QPolygon(points))
+
+    # 太陽
+    painter.setBrush(highlight_color)
+    painter.drawEllipse(156, 60, 40, 40)
+
+    # スパーク
+    spark_x, spark_y = 196, 60
+    painter.setPen(QPen(highlight_color, 2))
+    for angle in range(0, 360, 45):
+        x1 = int(spark_x + 8 * math.cos(math.radians(angle)))
+        y1 = int(spark_y + 8 * math.sin(math.radians(angle)))
+        x2 = int(spark_x + 15 * math.cos(math.radians(angle)))
+        y2 = int(spark_y + 15 * math.sin(math.radians(angle)))
+        painter.drawLine(x1, y1, x2, y2)
+
+    painter.end()
+    return QIcon(QPixmap.fromImage(img))
+
+
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Pict Cutter")
+    app.setApplicationName("Icon Gene Form")
     app.setApplicationVersion("1.0.0")
+
+    # アプリアイコンを設定
+    app.setWindowIcon(create_app_icon())
 
     font = QFont("Yu Gothic UI", 10)
     app.setFont(font)
